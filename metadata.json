@@ -1,0 +1,7 @@
+{
+  "name": "ScanGrade - AI Answer Sheet Scanner & Auto-Grader",
+  "description": "Camera-based AI answer sheet scanner and auto-grader. Scan answer keys and student sheets, auto-score 1s and 0s per item dynamically, and export results to Excel (.xlsx).",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
