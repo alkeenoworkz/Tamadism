@@ -298,6 +298,18 @@ export default function App() {
               <span>Print Blank Sheets</span>
             </button>
 
+            {/* Download APK Link */}
+            <a
+              href="/build-outputs/app-debug.apk"
+              download="app-debug.apk"
+              title="Download Android APK (app-debug.apk)"
+              className="flex items-center gap-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-500/30 text-xs font-semibold rounded-xl transition shadow-xs"
+            >
+              <Download className="w-4 h-4 text-emerald-400" />
+              <span className="hidden lg:inline">Download APK</span>
+              <span className="lg:hidden">APK</span>
+            </a>
+
             {/* Main Primary Scan Button */}
             <button
               type="button"
@@ -490,6 +502,13 @@ export default function App() {
             >
               Export .xlsx
             </button>
+            <a
+              href="/build-outputs/app-debug.apk"
+              download="app-debug.apk"
+              className="hover:text-emerald-400 text-emerald-400/90 font-medium transition"
+            >
+              Download app-debug.apk
+            </a>
           </div>
         </div>
       </footer>

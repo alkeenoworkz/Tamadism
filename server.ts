@@ -497,6 +497,20 @@ app.delete('/api/storage/records', async (_req, res) => {
   }
 });
 
+// -------------------------------------------------------------
+// APK Download Route for build-outputs
+// -------------------------------------------------------------
+app.use('/build-outputs', express.static(path.resolve(__dirname, 'build-outputs')));
+
+app.get('/api/download-apk', (_req, res) => {
+  const apkPath = path.resolve(__dirname, 'build-outputs', 'app-debug.apk');
+  if (fs.existsSync(apkPath)) {
+    res.download(apkPath, 'app-debug.apk');
+  } else {
+    res.status(404).json({ error: 'app-debug.apk not found in build-outputs' });
+  }
+});
+
 // Setup Vite middleware or static serving
 async function startServer() {
   if (process.env.NODE_ENV === 'production') {
