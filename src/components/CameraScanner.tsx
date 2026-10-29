@@ -11,7 +11,8 @@ import {
   AlertCircle,
   FileText,
   HelpCircle,
-  Maximize2
+  Maximize2,
+  Info
 } from 'lucide-react';
 import { AnswerKey, GradeSheetResponse } from '../types';
 import { playShutterSound, playGradeSuccessSound } from '../utils/soundEffects';
@@ -45,6 +46,7 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({
   const [processingStatus, setProcessingStatus] = useState<string>('');
   const [capturedPreview, setCapturedPreview] = useState<string | null>(null);
   const [lastGradedInfo, setLastGradedInfo] = useState<{ name: string; score: number; total: number } | null>(null);
+  const [quotaNotice, setQuotaNotice] = useState<string | null>(null);
 
   // Initialize camera stream
   const startCamera = useCallback(async () => {
@@ -155,6 +157,10 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({
           throw new Error(data.error || 'Failed to parse answer key from photo');
         }
 
+        if (data.assistedMode || data.quotaExceeded) {
+          setQuotaNotice(data.warning || 'Gemini Free Tier daily quota limit reached. Draft key imported for review.');
+        }
+
         playGradeSuccessSound();
         if (onScannedKey) {
           onScannedKey(data.data);
@@ -179,6 +185,10 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({
           throw new Error(data.error || 'Failed to grade student sheet');
         }
 
+        if (data.assistedMode || data.quotaExceeded) {
+          setQuotaNotice(data.warning || 'Processed in Assisted Review Mode. Tap Inspect to verify student marks.');
+        }
+
         playGradeSuccessSound();
         setLastGradedInfo({
           name: data.data.studentName,
@@ -191,7 +201,6 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({
         }
 
         if (!continuousMode) {
-          // If not continuous, pause to let user inspect
           setTimeout(() => {
             setIsProcessing(false);
             setCapturedPreview(null);
@@ -200,7 +209,7 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({
         }
       }
     } catch (err: any) {
-      alert(`OCR Error: ${err.message || 'Error processing image'}`);
+      alert(`OCR Notice: ${err.message || 'Error processing image'}`);
     } finally {
       setIsProcessing(false);
       setProcessingStatus('');
@@ -234,14 +243,18 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({
     e.target.value = '';
   };
 
-  // Generate test sample sheet on the fly
+  // Instant local test sample sheet grading (preserves user's Gemini free tier quota)
   const handleTestWithSampleSheet = (type: 'high' | 'mixed' | 'perfect') => {
     if (!answerKey || answerKey.items.length === 0) {
       alert('Please setup an Answer Key first.');
       return;
     }
 
-    const total = answerKey.totalItems;
+    setIsProcessing(true);
+    setProcessingStatus('Simulating camera scan & grading...');
+    playShutterSound();
+
+    const totalKeyItems = answerKey.totalItems;
     let sampleStudentName = 'Julian Reynolds';
     let sampleStudentId = 'STU-1088';
 
@@ -253,12 +266,16 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({
       sampleStudentId = 'STU-1099';
     }
 
-    const items = answerKey.items.map((keyItem, index) => {
+    // Build student answers
+    const studentAnswerMap: Record<number, string> = {};
+    const itemScores: Record<number, number> = {};
+    const itemDetails: any[] = [];
+    let totalScore = 0;
+
+    const sampleItemsForImage = answerKey.items.map((keyItem, index) => {
       let ans = keyItem.correctAnswer;
-      // Introduce mistakes for realistic grading test
       if (type === 'mixed') {
         if (index % 3 === 0) {
-          // Change answer to incorrect letter
           const letters = ['A', 'B', 'C', 'D'].filter((l) => l !== keyItem.correctAnswer);
           ans = letters[0] || 'A';
         }
@@ -267,6 +284,21 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({
           ans = keyItem.correctAnswer === 'A' ? 'B' : 'A';
         }
       }
+
+      studentAnswerMap[keyItem.itemNumber] = ans;
+      const isCorrect = ans === keyItem.correctAnswer;
+      const score = isCorrect ? 1 : 0;
+      itemScores[keyItem.itemNumber] = score;
+      if (isCorrect) totalScore += 1;
+
+      itemDetails.push({
+        itemNumber: keyItem.itemNumber,
+        studentAnswer: ans,
+        correctAnswer: keyItem.correctAnswer,
+        isCorrect,
+        score,
+      });
+
       return {
         itemNumber: keyItem.itemNumber,
         answer: ans,
@@ -277,11 +309,43 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({
       answerKey.title || 'Exam Answer Sheet',
       sampleStudentName,
       sampleStudentId,
-      items,
+      sampleItemsForImage,
       false
     );
 
-    processImage(testImg);
+    setCapturedPreview(testImg);
+
+    setTimeout(() => {
+      playGradeSuccessSound();
+      const percentage = totalKeyItems > 0 ? Number(((totalScore / totalKeyItems) * 100).toFixed(1)) : 0;
+
+      const result: GradeSheetResponse = {
+        studentName: sampleStudentName,
+        studentId: sampleStudentId,
+        itemScores,
+        itemDetails,
+        totalScore,
+        totalItems: totalKeyItems,
+        percentage,
+        sheetNotes: type === 'perfect' ? '100% Perfect Score' : type === 'high' ? 'High Score 93%' : 'Mixed Score',
+      };
+
+      setLastGradedInfo({
+        name: sampleStudentName,
+        score: totalScore,
+        total: totalKeyItems,
+      });
+
+      if (onGradedSheet) {
+        onGradedSheet(result, testImg);
+      }
+
+      setIsProcessing(false);
+      setProcessingStatus('');
+      if (continuousMode) {
+        setTimeout(() => setCapturedPreview(null), 1000);
+      }
+    }, 400);
   };
 
   return (
@@ -327,6 +391,19 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({
         </div>
       </header>
 
+      {/* Quota Notice Banner if active */}
+      {quotaNotice && (
+        <div className="px-4 py-2.5 bg-amber-950/80 border-b border-amber-500/40 text-amber-200 text-xs flex items-center justify-between z-20">
+          <div className="flex items-center gap-2">
+            <Info className="w-4 h-4 text-amber-400 shrink-0" />
+            <span>{quotaNotice}</span>
+          </div>
+          <button onClick={() => setQuotaNotice(null)} className="text-amber-400 font-bold ml-2">
+            &times;
+          </button>
+        </div>
+      )}
+
       {/* Main Viewfinder Area */}
       <div className="relative flex-1 bg-black flex items-center justify-center overflow-hidden">
         {/* Live Camera View */}
@@ -364,10 +441,11 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({
 
               {/* Scanning Laser Animation during processing */}
               {isProcessing && (
-                <div className="absolute inset-x-0 h-1 bg-gradient-to-r from-transparent via-cyan-400 to-transparent shadow-[0_0_15px_#22d3ee] animate-pulse"
-                     style={{
-                       animation: 'scannerLaser 2s ease-in-out infinite alternate',
-                     }}
+                <div
+                  className="absolute inset-x-0 h-1 bg-gradient-to-r from-transparent via-cyan-400 to-transparent shadow-[0_0_15px_#22d3ee] animate-pulse"
+                  style={{
+                    animation: 'scannerLaser 2s ease-in-out infinite alternate',
+                  }}
                 />
               )}
 

@@ -10,7 +10,8 @@ import {
   AlertTriangle,
   X,
   Sparkles,
-  HelpCircle
+  HelpCircle,
+  Info
 } from 'lucide-react';
 import { AnswerKey, AnswerKeyItem } from '../types';
 import { generateSampleSheetImage } from '../utils/sampleData';
@@ -33,6 +34,7 @@ export const AnswerKeyModal: React.FC<AnswerKeyModalProps> = ({
   const [quickPasteText, setQuickPasteText] = useState('');
   const [showQuickPaste, setShowQuickPaste] = useState(false);
   const [isScanningSampleKey, setIsScanningSampleKey] = useState(false);
+  const [quotaNotice, setQuotaNotice] = useState<string | null>(null);
 
   // Common multiple-choice options
   const defaultOptions = ['A', 'B', 'C', 'D'];
@@ -78,7 +80,6 @@ export const AnswerKeyModal: React.FC<AnswerKeyModalProps> = ({
 
     const parsedAnswers: string[] = [];
     tokens.forEach((token) => {
-      // Remove item numbering if present like "1." or "Q1:"
       const clean = token.replace(/^[0-9]+[.:)]/g, '').replace(/[^A-Z0-9]/g, '');
       if (clean) {
         parsedAnswers.push(clean);
@@ -96,55 +97,28 @@ export const AnswerKeyModal: React.FC<AnswerKeyModalProps> = ({
     }
   };
 
-  // Test scan a master key via generated sample
-  const handleTestMasterKeyScan = async () => {
+  // Load sample master key instantly (preserves Gemini free tier quota)
+  const handleTestMasterKeyScan = () => {
     setIsScanningSampleKey(true);
-    try {
-      const sampleItems = [
-        { itemNumber: 1, answer: 'A' },
-        { itemNumber: 2, answer: 'C' },
-        { itemNumber: 3, answer: 'B' },
-        { itemNumber: 4, answer: 'D' },
-        { itemNumber: 5, answer: 'A' },
-        { itemNumber: 6, answer: 'B' },
-        { itemNumber: 7, answer: 'D' },
-        { itemNumber: 8, answer: 'C' },
-        { itemNumber: 9, answer: 'A' },
-        { itemNumber: 10, answer: 'B' },
+    setTimeout(() => {
+      const sampleItems: AnswerKeyItem[] = [
+        { itemNumber: 1, correctAnswer: 'A' },
+        { itemNumber: 2, correctAnswer: 'C' },
+        { itemNumber: 3, correctAnswer: 'B' },
+        { itemNumber: 4, correctAnswer: 'D' },
+        { itemNumber: 5, correctAnswer: 'A' },
+        { itemNumber: 6, correctAnswer: 'B' },
+        { itemNumber: 7, correctAnswer: 'D' },
+        { itemNumber: 8, correctAnswer: 'C' },
+        { itemNumber: 9, correctAnswer: 'A' },
+        { itemNumber: 10, correctAnswer: 'B' },
       ];
 
-      const sampleKeyImg = generateSampleSheetImage(
-        '10-Item Master Science Key',
-        'OFFICIAL INSTRUCTOR KEY',
-        'KEY-MASTER-01',
-        sampleItems,
-        true
-      );
-
-      const res = await fetch('/api/scan-answer-key', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          imageBase64: sampleKeyImg,
-          expectedItems: 10,
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || 'Failed to scan key');
-      }
-
-      if (data.data.title) setTitle(data.data.title);
-      if (Array.isArray(data.data.items)) {
-        setItems(data.data.items);
-      }
-      alert('Master Answer Key scanned and imported successfully via Gemini OCR!');
-    } catch (err: any) {
-      alert(`Error scanning key: ${err.message}`);
-    } finally {
+      setTitle('10-Item Master Science Key');
+      setItems(sampleItems);
       setIsScanningSampleKey(false);
-    }
+      setQuotaNotice('Sample Master Key loaded successfully! You can customize any answer below.');
+    }, 300);
   };
 
   const handleSave = () => {
@@ -189,6 +163,22 @@ export const AnswerKeyModal: React.FC<AnswerKeyModalProps> = ({
           </button>
         </div>
 
+        {/* Quota / Status Notice Banner if present */}
+        {quotaNotice && (
+          <div className="px-6 py-2.5 bg-indigo-950/60 border-b border-indigo-500/30 flex items-center justify-between text-xs text-indigo-200">
+            <div className="flex items-center gap-2">
+              <Info className="w-4 h-4 text-indigo-400 shrink-0" />
+              <span>{quotaNotice}</span>
+            </div>
+            <button
+              onClick={() => setQuotaNotice(null)}
+              className="text-slate-400 hover:text-white text-xs"
+            >
+              &times;
+            </button>
+          </div>
+        )}
+
         {/* Action Options Banner */}
         <div className="px-6 py-3.5 bg-gradient-to-r from-amber-500/10 via-indigo-500/10 to-transparent border-b border-slate-800 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
@@ -211,7 +201,7 @@ export const AnswerKeyModal: React.FC<AnswerKeyModalProps> = ({
               className="flex items-center gap-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/30 text-xs rounded-xl transition disabled:opacity-50"
             >
               <Sparkles className="w-3.5 h-3.5" />
-              {isScanningSampleKey ? 'Scanning Sample...' : 'AI Scan Sample Key'}
+              {isScanningSampleKey ? 'Loading...' : 'Load Sample 10-Item Key'}
             </button>
           </div>
 

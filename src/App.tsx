@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Camera,
   FileSpreadsheet,
@@ -12,11 +12,24 @@ import {
   CheckCircle2,
   ChevronRight,
   Layers,
-  Info
+  Info,
+  Database,
+  CloudCheck
 } from 'lucide-react';
 import { AnswerKey, StudentSheetRecord, GradeSheetResponse } from './types';
 import { DEFAULT_SAMPLE_KEY, INITIAL_DEMO_RECORDS } from './utils/sampleData';
 import { exportRecordsToExcel } from './utils/exportToExcel';
+import {
+  compressThumbnail,
+  saveRecordsToLocalStorage,
+  loadRecordsFromLocalStorage,
+  saveAnswerKeyToLocalStorage,
+  loadAnswerKeyFromLocalStorage,
+  fetchServerStorage,
+  syncRecordsToServer,
+  syncAnswerKeyToServer,
+  clearRecordsOnServer
+} from './utils/storage';
 import { CameraScanner } from './components/CameraScanner';
 import { AnswerKeyModal } from './components/AnswerKeyModal';
 import { StudentReviewModal } from './components/StudentReviewModal';
@@ -24,23 +37,24 @@ import { PrintableSheetsModal } from './components/PrintableSheetsModal';
 import { ResultsSpreadsheet } from './components/ResultsSpreadsheet';
 
 export default function App() {
-  // Initialize Answer Key from local storage or default
+  // Load cached data initially for zero-delay display
+  const initialLocalRecords = loadRecordsFromLocalStorage();
+  const initialLocalKey = loadAnswerKeyFromLocalStorage();
+
   const [answerKey, setAnswerKey] = useState<AnswerKey>(() => {
-    try {
-      const saved = localStorage.getItem('scangrade_key');
-      if (saved) return JSON.parse(saved);
-    } catch {}
-    return DEFAULT_SAMPLE_KEY;
+    return initialLocalKey || DEFAULT_SAMPLE_KEY;
   });
 
-  // Initialize Graded Records from local storage or default sample records
   const [records, setRecords] = useState<StudentSheetRecord[]>(() => {
-    try {
-      const saved = localStorage.getItem('scangrade_records');
-      if (saved) return JSON.parse(saved);
-    } catch {}
-    return INITIAL_DEMO_RECORDS;
+    if (initialLocalRecords.records !== null) {
+      return initialLocalRecords.records;
+    }
+    // If never initialized before, show demo records on first ever visit
+    return initialLocalRecords.isInitialized ? [] : INITIAL_DEMO_RECORDS;
   });
+
+  const [isStorageSynced, setIsStorageSynced] = useState<boolean>(true);
+  const isInitialMount = useRef(true);
 
   // Modal states
   const [isScannerOpen, setIsScannerOpen] = useState(false);
@@ -50,18 +64,62 @@ export default function App() {
   const [selectedRecord, setSelectedRecord] = useState<StudentSheetRecord | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // Sync to local storage
+  // Fetch persistent server storage on app launch
   useEffect(() => {
-    try {
-      localStorage.setItem('scangrade_key', JSON.stringify(answerKey));
-    } catch {}
-  }, [answerKey]);
+    let isMounted = true;
+    async function loadStorage() {
+      const serverData = await fetchServerStorage();
+      if (!isMounted) return;
 
+      if (serverData.exists) {
+        if (Array.isArray(serverData.records)) {
+          setRecords(serverData.records);
+          saveRecordsToLocalStorage(serverData.records);
+        }
+        if (serverData.answerKey) {
+          setAnswerKey(serverData.answerKey);
+          saveAnswerKeyToLocalStorage(serverData.answerKey);
+        }
+      } else {
+        // If server file doesn't exist yet, seed it with current records/key
+        const currentRecs = initialLocalRecords.records !== null
+          ? initialLocalRecords.records
+          : (initialLocalRecords.isInitialized ? [] : INITIAL_DEMO_RECORDS);
+
+        syncRecordsToServer(currentRecs);
+        syncAnswerKeyToServer(initialLocalKey || DEFAULT_SAMPLE_KEY);
+      }
+    }
+
+    loadStorage();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // Save and synchronize records whenever records change
   useEffect(() => {
-    try {
-      localStorage.setItem('scangrade_records', JSON.stringify(records));
-    } catch {}
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      return;
+    }
+
+    setIsStorageSynced(false);
+    saveRecordsToLocalStorage(records);
+
+    const timer = setTimeout(async () => {
+      await syncRecordsToServer(records);
+      setIsStorageSynced(true);
+    }, 400);
+
+    return () => clearTimeout(timer);
   }, [records]);
+
+  // Save and synchronize answer key
+  useEffect(() => {
+    saveAnswerKeyToLocalStorage(answerKey);
+    syncAnswerKeyToServer(answerKey);
+  }, [answerKey]);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -69,7 +127,10 @@ export default function App() {
   };
 
   // Handle a new student sheet graded from camera OCR
-  const handleGradedSheet = (result: GradeSheetResponse, imageSnapshot: string) => {
+  const handleGradedSheet = async (result: GradeSheetResponse, imageSnapshot: string) => {
+    // Compress thumbnail so it never exceeds browser storage limits
+    const thumbnail = await compressThumbnail(imageSnapshot, 280);
+
     // Generate next auto-increment ID
     const nextId = records.length > 0 ? Math.max(...records.map((r) => r.id)) + 1 : 1;
 
@@ -83,12 +144,19 @@ export default function App() {
       totalItems: result.totalItems,
       percentage: result.percentage,
       scannedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      sheetImageThumbnail: imageSnapshot,
+      sheetImageThumbnail: thumbnail || undefined,
       sheetNotes: result.sheetNotes,
     };
 
-    setRecords((prev) => [newRecord, ...prev]);
-    showToast(`Graded #${newRecord.id} ${newRecord.studentName}: ${newRecord.totalScore}/${newRecord.totalItems} (${newRecord.percentage}%)`);
+    setRecords((prev) => {
+      const updated = [newRecord, ...prev];
+      // Immediately write to local storage
+      saveRecordsToLocalStorage(updated);
+      syncRecordsToServer(updated);
+      return updated;
+    });
+
+    showToast(`Graded & Saved #${newRecord.id} ${newRecord.studentName} (${newRecord.totalScore}/${newRecord.totalItems})`);
   };
 
   // Handle scanned answer key
@@ -102,40 +170,60 @@ export default function App() {
         createdAt: new Date().toLocaleDateString(),
       };
       setAnswerKey(updatedKey);
+      saveAnswerKeyToLocalStorage(updatedKey);
+      syncAnswerKeyToServer(updatedKey);
       setIsScannerOpen(false);
-      showToast(`Master Answer Key imported! Detected ${updatedKey.totalItems} question items.`);
+      showToast(`Master Answer Key saved! (${updatedKey.totalItems} items)`);
     }
   };
 
   // Save modified answer key
   const handleSaveKey = (newKey: AnswerKey) => {
     setAnswerKey(newKey);
-    showToast(`Answer key updated: ${newKey.title} (${newKey.totalItems} items)`);
+    saveAnswerKeyToLocalStorage(newKey);
+    syncAnswerKeyToServer(newKey);
+    showToast(`Answer key saved: ${newKey.title} (${newKey.totalItems} items)`);
   };
 
   // Update existing record
   const handleUpdateRecord = (updated: StudentSheetRecord) => {
-    setRecords((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
-    showToast(`Record #${updated.id} updated`);
+    setRecords((prev) => {
+      const newRecords = prev.map((r) => (r.id === updated.id ? updated : r));
+      saveRecordsToLocalStorage(newRecords);
+      syncRecordsToServer(newRecords);
+      return newRecords;
+    });
+    showToast(`Record #${updated.id} updated and saved`);
   };
 
   // Delete record
   const handleDeleteRecord = (id: number) => {
-    setRecords((prev) => prev.filter((r) => r.id !== id));
+    setRecords((prev) => {
+      const newRecords = prev.filter((r) => r.id !== id);
+      saveRecordsToLocalStorage(newRecords);
+      syncRecordsToServer(newRecords);
+      return newRecords;
+    });
     showToast(`Record #${id} deleted`);
   };
 
-  // Clear all
-  const handleClearAll = () => {
+  // Clear all records permanently
+  const handleClearAll = async () => {
     setRecords([]);
-    showToast('All records cleared');
+    saveRecordsToLocalStorage([]);
+    await clearRecordsOnServer();
+    showToast('All records cleared and removed from storage');
   };
 
-  // Load demo data
+  // Load demo data explicitly if requested
   const handleLoadDemoData = () => {
     setRecords(INITIAL_DEMO_RECORDS);
     setAnswerKey(DEFAULT_SAMPLE_KEY);
-    showToast('Sample Biology Quiz key and 4 graded student sheets loaded!');
+    saveRecordsToLocalStorage(INITIAL_DEMO_RECORDS);
+    syncRecordsToServer(INITIAL_DEMO_RECORDS);
+    saveAnswerKeyToLocalStorage(DEFAULT_SAMPLE_KEY);
+    syncAnswerKeyToServer(DEFAULT_SAMPLE_KEY);
+    showToast('Sample Biology Quiz key and 4 student sheets loaded and saved!');
   };
 
   const handleExportExcel = () => {
@@ -170,6 +258,14 @@ export default function App() {
                 <h1 className="font-extrabold text-lg text-white tracking-tight">ScanGrade AI</h1>
                 <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                   OCR Engine
+                </span>
+                {/* Persistent Storage Status Badge */}
+                <span
+                  title={isStorageSynced ? 'All changes saved permanently' : 'Saving changes...'}
+                  className="hidden md:inline-flex items-center gap-1 text-[11px] text-slate-400 bg-slate-800/80 px-2 py-0.5 rounded border border-slate-700/80"
+                >
+                  <Database className={`w-3 h-3 ${isStorageSynced ? 'text-emerald-400' : 'text-amber-400 animate-pulse'}`} />
+                  <span>{isStorageSynced ? 'Auto-Saved' : 'Saving...'}</span>
                 </span>
               </div>
               <p className="text-xs text-slate-400 hidden sm:block">
@@ -230,13 +326,18 @@ export default function App() {
                 </span>
                 <span className="text-slate-600">&bull;</span>
                 <span className="text-xs font-semibold text-white">{answerKey.title}</span>
+                <span className="text-slate-600">&bull;</span>
+                <span className="text-xs text-emerald-400 flex items-center gap-1">
+                  <Database className="w-3 h-3" />
+                  {records.length} {records.length === 1 ? 'Sheet' : 'Sheets'} Persisted
+                </span>
               </div>
               <h2 className="text-xl font-bold text-white tracking-tight">
                 Camera Answer Sheet Scanner &amp; Matrix Auto-Grader
               </h2>
               <p className="text-xs text-slate-400 max-w-2xl">
                 Point your camera at any student answer sheet to instantly recognize bubbles via OCR.
-                Each question is marked with <strong>1</strong> (correct) or <strong>0</strong> (incorrect) in dynamic columns scaling for any quiz size.
+                All scanned results are permanently saved to database storage and remain available every time you open the app.
               </p>
             </div>
 
